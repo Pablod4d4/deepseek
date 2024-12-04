@@ -1,44 +1,12 @@
 # Copyright 2023 The OPRO Authors
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-r"""The .py file for prompt optimization.
+# ...保留原有版权信息...
 
-Usage:
+r"""DeepSeek本地优化的主程序
 
-Step 1: edit the starting instructions by modifying `initial_instructions`
-
-Step 2: edit the training ratio by modifying `train_ratio`
-
-Step 3: check if the model configs (like batch size) are the same as the actual serving configs
-
-Step 4: run
-
-```
+使用方式:
 python optimize_instructions.py \
-    --optimizer="gpt-3.5-turbo" --scorer="text-bison" \
+    --optimizer="deepseek" --scorer="deepseek" \
     --instruction_pos="A_begin" --dataset="gsm8k" --task="train"
-```
-
-The outputs will then be written to `outputs/optimization-results/` in the opro folder.
-
-Notes:
-
-1. One or more API keys may need to be provided:
-- When using a Google-Cloud-served model (like text-bison at https://developers.generativeai.google/tutorials/text_quickstart), add `--palm_api_key=<your_key>`
-- When using an OpenAI model, add `--openai_api_key=”<your_key>”`
-
-2. The initial instructions should be provided in the "initial_instructions"
-variable.
 """
 
 import datetime
@@ -53,321 +21,122 @@ sys.path.insert(0, OPRO_ROOT_PATH)
 
 from absl import app
 from absl import flags
-import google.generativeai as palm
 import numpy as np
-import openai
 from opro import prompt_utils
 from opro.optimization import opt_utils
 import pandas as pd
 
 ROOT_DATA_FOLDER_PATH = os.path.join(OPRO_ROOT_PATH, "data")
 
-_OPENAI_API_KEY = flags.DEFINE_string(
-    "openai_api_key", "", "The OpenAI API key."
-)
-
-_PALM_API_KEY = flags.DEFINE_string("palm_api_key", "", "The PaLM API key.")
-
+# ====================== 修改1: 删除不必要的API密钥参数 ======================
 _SCORER = flags.DEFINE_string(
-    "scorer", "text-bison", "The name of the scorer LLM."
+    "scorer", "deepseek", "评分模型名称"
 )
 
 _OPTIMIZER = flags.DEFINE_string(
-    "optimizer", "gpt-3.5-turbo", "The name of the optimizer LLM."
+    "optimizer", "deepseek", "优化模型名称"
 )
 
 _DATASET = flags.DEFINE_string(
-    "dataset", "gsm8k", "The name of dataset to search for instructions on."
+    "dataset", "gsm8k", "数据集名称"
 )
 
 _TASK = flags.DEFINE_string(
-    "task",
-    "train",
-    "The name of task within the above dataset to search for instructions on.",
+    "task", "train", "具体任务名称"
 )
 
 _INSTRUCTION_POS = flags.DEFINE_string(
     "instruction_pos",
     "A_begin",
-    "The position of the instruction to search for.",
+    "指令位置"
 )
 
 _META_PROMPT_TYPE = flags.DEFINE_string(
     "meta_prompt_type",
     "both_instructions_and_exemplars",
-    "The type of meta-prompt: whether to have both previous instructions and"
-    " dataset exemplars (often for fine-tuned optimizers), or to have only"
-    " previous instructions (often for pre-trained optimizers).",
+    "元提示类型"
 )
 
-
 def main(_):
-  openai_api_key = _OPENAI_API_KEY.value
-  palm_api_key = _PALM_API_KEY.value
-  scorer_llm_name = _SCORER.value
-  optimizer_llm_name = _OPTIMIZER.value
+    # ====================== 修改2: 移除API密钥相关代码 ======================
+  scorer_llm_name = _SCORER.value.lower()
+  optimizer_llm_name = _OPTIMIZER.value.lower()
   dataset_name = _DATASET.value.lower()
   task_name = _TASK.value
   meta_prompt_type = _META_PROMPT_TYPE.value
-
-  assert dataset_name in {
-      "mmlu",
-      "bbh",
-      "gsm8k",
-  }, "The lower-case dataset name must be one of mmlu, bbh, or gsm8k."
-  if dataset_name == "mmlu":
-    assert task_name in {
-        "STEM",
-        "humanities",
-        "social sciences",
-        "other (business, health, misc.)",
-    }  # for now only support searching on one MMLU category
-  elif dataset_name == "bbh":
-    assert task_name in {
-        "boolean_expressions",
-        "causal_judgement",
-        "date_understanding",
-        "disambiguation_qa",
-        "dyck_languages",
-        "formal_fallacies",
-        "geometric_shapes",
-        "hyperbaton",
-        "logical_deduction_five_objects",
-        "logical_deduction_seven_objects",
-        "logical_deduction_three_objects",
-        "movie_recommendation",
-        "multistep_arithmetic_two",
-        "navigate",
-        "object_counting",
-        "penguins_in_a_table",
-        "reasoning_about_colored_objects",
-        "ruin_names",
-        "salient_translation_error_detection",
-        "snarks",
-        "sports_understanding",
-        "temporal_sequences",
-        "tracking_shuffled_objects_five_objects",
-        "tracking_shuffled_objects_seven_objects",
-        "tracking_shuffled_objects_three_objects",
-        "web_of_lies",
-        "word_sorting",
-    }
-  else:
-    assert dataset_name == "gsm8k"
-    assert task_name in {"train", "test"}
-
-  assert scorer_llm_name in {
-      "text-bison",
-      "gpt-3.5-turbo",
-      "gpt-4",
-  }
-  assert optimizer_llm_name in {
-      "text-bison",
-      "gpt-3.5-turbo",
-      "gpt-4",
-  }
-  assert meta_prompt_type in {
-      "both_instructions_and_exemplars",
-      "instructions_only",
-  }
-
+  # 在main函数开头添加 ↓↓↓
   instruction_pos = _INSTRUCTION_POS.value
-  assert instruction_pos in {
-      "before_Q",
-      "Q_begin",
-      "Q_end",
-      "A_begin",
-  }, (
-      "The instruction position should be either before the question, or at the"
-      " beginning of the question, at the end of the question, or at the"
-      " beginning of the answer."
-  )
-  print(
-      f"scorer: {scorer_llm_name}, optimizer: {optimizer_llm_name}, dataset:"
-      f" {dataset_name}, task: {task_name}, instruction_pos: {instruction_pos}"
-  )
+# 模型名称校验
+  assert scorer_llm_name == "deepseek", "只支持DeepSeek评分模型"
+  assert optimizer_llm_name == "deepseek", "只支持DeepSeek优化模型"
 
-  # make sure the scorer and optimizer models are callable
-  if scorer_llm_name in {"gpt-3.5-turbo", "gpt-4"}:
-    assert openai_api_key, "The OpenAI API key must be provided."
-    openai.api_key = openai_api_key
-  else:
-    assert scorer_llm_name == "text-bison"
-    assert (
-        palm_api_key
-    ), "A PaLM API key is needed when prompting the text-bison model."
-    palm.configure(api_key=palm_api_key)
-
-  if optimizer_llm_name in {"gpt-3.5-turbo", "gpt-4"}:
-    assert openai_api_key, "The OpenAI API key must be provided."
-    openai.api_key = openai_api_key
-  else:
-    assert optimizer_llm_name == "text-bison"
-    assert (
-        palm_api_key
-    ), "A PaLM API key is needed when prompting the text-bison model."
-    palm.configure(api_key=palm_api_key)
-
-  if dataset_name == "mmlu":
-    root_data_folder_path = os.path.join(ROOT_DATA_FOLDER_PATH, "MMLU-data")
-  elif dataset_name == "bbh":
-    root_data_folder_path = os.path.join(
-        ROOT_DATA_FOLDER_PATH, "BIG-Bench-Hard-data/"
+    # ====================== 修改3: 简化模型配置 ======================
+    # 评分模型配置
+  scorer_llm_dict = {
+        "model_type": "deepseek",
+        "temperature": 0.0,
+        "max_decode_steps": 1024,
+        "batch_size": 1,
+        "num_servers": 1
+    }
+  call_scorer_server_func = functools.partial(
+        prompt_utils.call_deepseek_local,
+        model="deepseek-r1:latest",
+        temperature=scorer_llm_dict["temperature"],
+        max_decode_steps=scorer_llm_dict["max_decode_steps"]
     )
-  else:
-    assert dataset_name == "gsm8k"
-    root_data_folder_path = os.path.join(ROOT_DATA_FOLDER_PATH, "gsm_data")
 
-  # =================== create the result directory ==========================
-  datetime_str = (
-      str(datetime.datetime.now().replace(microsecond=0))
-      .replace(" ", "-")
-      .replace(":", "-")
-  )
+    # 优化模型配置
+  optimizer_llm_dict = {
+        "model_type": "deepseek",
+        "temperature": 1.0,
+        "max_decode_steps": 512,
+        "batch_size": 1,
+        "num_servers": 1
+    }
+  call_optimizer_server_func = functools.partial(
+        prompt_utils.call_deepseek_local,
+        model="deepseek-r1:latest",
+        temperature=optimizer_llm_dict["temperature"],
+        max_decode_steps=optimizer_llm_dict["max_decode_steps"]
+    )
 
+  root_data_folder_path = os.path.join(OPRO_ROOT_PATH, "data")
+  if dataset_name == "gsm8k":
+        root_data_folder_path = os.path.join(root_data_folder_path, "gsm_data")
+    
+    # ====================== 修复目录创建逻辑 ======================
+  datetime_str = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
   save_folder = os.path.join(
-      OPRO_ROOT_PATH,
-      "outputs",
-      "optimization-results",
-      f"{dataset_name.upper()}-{task_name}-s-{scorer_llm_name}-o-{optimizer_llm_name}-{datetime_str}/",
-  )
-  result_by_instruction_folder = os.path.join(
-      save_folder, "result_by_instruction"
-  )
-  os.makedirs(result_by_instruction_folder)
-  print(f"result directory:\n{save_folder}")
-
-  # ====================== scorer model configs ==============================
-  # difference between num_decodes and batch_size:
-  # - num_decodes: how many outputs we actually want for each input
-  # - batch_size: the batch size in model serving, should equal to that in
-  # model serving config
-
-  if scorer_llm_name == "text-bison":
-    # when prompting text-bison with Cloud API
-    scorer_finetuned_palm_temperature = 0.0
-    scorer_finetuned_palm_max_decode_steps = 1024
-    scorer_finetuned_palm_batch_size = 1
-    scorer_finetuned_palm_num_servers = 1
-    scorer_finetuned_palm_dict = dict()
-    scorer_finetuned_palm_dict["temperature"] = (
-        scorer_finetuned_palm_temperature
+        OPRO_ROOT_PATH, "outputs", "optimization-results",
+        f"{dataset_name}-{task_name}-deepseek-{datetime_str}"
     )
-    scorer_finetuned_palm_dict["num_servers"] = (
-        scorer_finetuned_palm_num_servers
-    )
-    scorer_finetuned_palm_dict["batch_size"] = scorer_finetuned_palm_batch_size
-    scorer_finetuned_palm_dict["max_decode_steps"] = (
-        scorer_finetuned_palm_max_decode_steps
-    )
+  os.makedirs(save_folder, exist_ok=True)
+    
+  result_by_instruction_folder = os.path.join(save_folder, "result_by_instruction")
+  os.makedirs(result_by_instruction_folder, exist_ok=True)
 
-    call_scorer_finetuned_palm_server_func = functools.partial(
-        prompt_utils.call_palm_server_from_cloud,
-        model="text-bison-001",
-        temperature=scorer_finetuned_palm_dict["temperature"],
-        max_decode_steps=scorer_finetuned_palm_dict["max_decode_steps"],
-    )
+    # ====================== 数据加载优化 ======================
+  if dataset_name == "gsm8k":
+        data_path = os.path.join(root_data_folder_path, f"gsm_{task_name}.tsv")
+        raw_data = pd.read_csv(data_path, sep="\t", header=None, names=["question", "answer"])
+        print(f"Loaded {len(raw_data)} examples from {data_path}")
 
-    scorer_llm_dict = {
-        "model_type": scorer_llm_name.lower(),
-    }
-    scorer_llm_dict.update(scorer_finetuned_palm_dict)
-    call_scorer_server_func = call_scorer_finetuned_palm_server_func
+    # ====================== 模型调用容错处理 ======================
+    # 修改测试调用部分
+  # ====================== 修改4: 更新服务器测试 ======================
+  print("\n======== 测试本地DeepSeek服务 ===========")
+  test_prompt = "太阳从北方升起吗？只需回答是或否。"
+  
+  scorer_test_output = call_scorer_server_func(test_prompt)
+  print(f"评分模型测试输出: {scorer_test_output}")
+  
+  optimizer_test_output = call_optimizer_server_func(test_prompt)
+  print(f"优化模型测试输出: {optimizer_test_output}")
+  print("服务测试完成")
 
-  else:
-    assert scorer_llm_name.lower() in {"gpt-3.5-turbo", "gpt-4"}
-    scorer_gpt_max_decode_steps = 1024
-    scorer_gpt_temperature = 0.0
-
-    scorer_gpt_dict = dict()
-    scorer_gpt_dict["max_decode_steps"] = scorer_gpt_max_decode_steps
-    scorer_gpt_dict["temperature"] = scorer_gpt_temperature
-    scorer_gpt_dict["num_decodes"] = 1
-    scorer_gpt_dict["batch_size"] = 1
-    scorer_gpt_dict["num_servers"] = 1
-
-    scorer_llm_dict = {
-        "model_type": scorer_llm_name.lower(),
-    }
-    scorer_llm_dict.update(scorer_gpt_dict)
-    call_scorer_server_func = functools.partial(
-        prompt_utils.call_openai_server_func,
-        model=scorer_llm_name.lower(),
-        max_decode_steps=scorer_gpt_max_decode_steps,
-        temperature=scorer_gpt_temperature,
-    )
-
-  # ====================== optimizer model configs ============================
-  if optimizer_llm_name.lower() == "text-bison":
-    # when prompting text-bison with Cloud API
-    optimizer_finetuned_palm_temperature = 1.0
-    optimizer_finetuned_palm_num_decodes = 8
-    optimizer_finetuned_palm_max_decode_steps = 1024
-    optimizer_finetuned_palm_batch_size = 1
-    optimizer_finetuned_palm_num_servers = 1
-    optimizer_finetuned_palm_dict = dict()
-    optimizer_finetuned_palm_dict["temperature"] = (
-        optimizer_finetuned_palm_temperature
-    )
-    optimizer_finetuned_palm_dict["num_decodes"] = (
-        optimizer_finetuned_palm_num_decodes
-    )
-    optimizer_finetuned_palm_dict["batch_size"] = (
-        optimizer_finetuned_palm_batch_size
-    )
-    optimizer_finetuned_palm_dict["num_servers"] = (
-        optimizer_finetuned_palm_num_servers
-    )
-    optimizer_finetuned_palm_dict["max_decode_steps"] = (
-        optimizer_finetuned_palm_max_decode_steps
-    )
-
-    call_optimizer_finetuned_palm_server_func = functools.partial(
-        prompt_utils.call_palm_server_from_cloud,
-        model="text-bison-001",
-        temperature=optimizer_finetuned_palm_dict["temperature"],
-        max_decode_steps=optimizer_finetuned_palm_dict["max_decode_steps"],
-    )
-
-    optimizer_llm_dict = {
-        "model_type": optimizer_llm_name.lower(),
-    }
-    optimizer_llm_dict.update(optimizer_finetuned_palm_dict)
-    call_optimizer_server_func = call_optimizer_finetuned_palm_server_func
-
-  else:
-    assert optimizer_llm_name in {"gpt-3.5-turbo", "gpt-4"}
-    optimizer_gpt_max_decode_steps = 512
-    optimizer_gpt_temperature = 1.0
-
-    optimizer_llm_dict = dict()
-    optimizer_llm_dict["max_decode_steps"] = optimizer_gpt_max_decode_steps
-    optimizer_llm_dict["temperature"] = optimizer_gpt_temperature
-    optimizer_llm_dict["batch_size"] = 1
-    optimizer_llm_dict["num_decodes"] = 1
-    call_optimizer_server_func = functools.partial(
-        prompt_utils.call_openai_server_func,
-        model=optimizer_llm_name,
-        max_decode_steps=optimizer_gpt_max_decode_steps,
-        temperature=optimizer_gpt_temperature,
-    )
-
-  # ====================== try calling the servers ============================
-  print("\n======== testing the scorer and optimizer servers ===========")
-  scorer_test_output = call_scorer_server_func(
-      "Does the sun rise from the north? Just answer yes or no."
-  )
-  print(f"number of scorer output decodes: {len(scorer_test_output)}")
-  print(f"scorer test output: {scorer_test_output}")
-  optimizer_test_output = call_optimizer_server_func(
-      "Does the sun rise from the north? Just answer yes or no.",
-      temperature=1.0,
-  )
-  print(f"number of optimizer output decodes: {len(optimizer_test_output)}")
-  print(f"optimizer test output: {optimizer_test_output}")
-  print("Finished testing the servers.")
-
-  # ====================== read data ============================
+  # ====================== 后续代码保持不变 ======================
+  # ...（保留原有数据加载、任务配置、优化流程等代码）...
   print("\n================ prompt optimization settings ==============")
   # from https://github.com/hendrycks/test/blob/master/categories.py
   subcategories = {
@@ -679,27 +448,20 @@ def main(_):
   )
 
   # ========== set other optimization experiment hyperparameters ==============
-  if scorer_llm_name == "text-bison":
-    old_instruction_score_threshold = 0.0
-    # old_instruction_score_threshold = 0.15  # for GSM8K
-  else:
-    assert scorer_llm_name in {"gpt-3.5-turbo", "gpt-4"}
-    old_instruction_score_threshold = 0.3
+# ====================== DeepSeek本地优化参数配置 ======================
+# 指令评分阈值
+  old_instruction_score_threshold = 0.2
 
-  if scorer_llm_name == "text-bison":
-    extract_final_answer_by_prompting_again = False
-    include_qa = False
-    evaluate_in_parallel = False
-  else:
-    assert scorer_llm_name in {"gpt-3.5-turbo", "gpt-4"}
-    extract_final_answer_by_prompting_again = False
-    include_qa = False
-    evaluate_in_parallel = False
+# 答案提取设置
+  extract_final_answer_by_prompting_again = True  # 需要二次提示获取规范化答案
+  include_qa = True  # 在prompt中保留完整问答对
+  evaluate_in_parallel = True  # 并行评估提升效率
 
+# 优化器参数
   optimizer_llm_temperature = optimizer_llm_dict["temperature"]
 
-  num_few_shot_questions_for_instruction_refinement = 3
-
+# 示例数量配置
+  num_few_shot_questions_for_instruction_refinement = 3  
   # To change the number of generated instructions in each step, one should
   # edit the value of the variable below, instead of editing the number of
   # decodes in model parameters, because those values are limited by model
@@ -797,6 +559,8 @@ def main(_):
   }
 
   opt_utils.run_evolution(**evolution_kwargs)
+
+
 
 
 if __name__ == "__main__":

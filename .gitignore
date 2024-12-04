@@ -1,3 +1,4 @@
+# 原始内容
 outputs/
 OWNERS
 BUILD
@@ -7,3 +8,62 @@ METADATA
 .vscode
 *.egg-info
 __pycache__/
+
+# === 新增内容 ===
+# Python
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+.pytest_cache/
+mypy_cache/
+.python-version
+
+# Environments
+.env
+.venv
+venv/
+ENV/
+env.bak/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Logs and databases
+*.log
+*.sqlite
+logs/
+
+# Local configs
+config/local.yaml
+config/*.local.*
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Editor files
+.idea/
+*.swp
+*.swo
+
+# Temp files
+*.tmp
+*.bak
+*.cache
+
+# Test coverage
+htmlcov/
+.coverage.*
+
+# Packaging
+*.whl
+*.tar.gz
+
+# DeepSeek本地部署相关（按需添加）
+models/  # 如果本地有模型缓存目录
+*.bin
+*.pth
+*.hdf5
